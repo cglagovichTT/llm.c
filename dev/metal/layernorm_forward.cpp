@@ -199,14 +199,28 @@ int main(int argc, char **argv) {
     EnqueueWriteBuffer(cq, weight_buffer, weight_rowmajor, false);
     EnqueueWriteBuffer(cq, bias_buffer, bias_rowmajor, false);
 
+    // Salars necessary for the kernel
+    // TODO: these should be fp32. which of them have to be bcast rows/cols, does it matter?
+    const float one_scalar = 1.0;
+    union { float f; uint32_t u; } one_packed; one_packed.f = one_scalar;
+    const float mean_recip_scalar = 1.0 / C;
+    union { float f; uint32_t u; } mean_recip_packed; mean_recip_packed.f = mean_recip_scalar;
+    constexpr float epsilon = 1e-5f;
+    union { float f; uint32_t u; } epsilon_packed; epsilon_packed.f = epsilon;
+
     // make program
     Program program = CreateProgram();
     constexpr CoreCoord core = {0, 0}; // TODO: Parallelize
+    std::vector<uint32_t> reader_ct_args = {
+        one_packed.u,
+        mean_recip_packed.u,
+        epsilon_packed.u
+    };
     auto reader = CreateKernel(
         program,
         "/localdev/cglagovich/llm.c/dev/metal/kernels/layernorm_forward/reader_interleaved.cpp",
         core,
-        DataMovementConfig {.processor = DataMovementProcessor::RISCV_0, .noc = NOC::RISCV_0_default}
+        DataMovementConfig {.processor = DataMovementProcessor::RISCV_0, .noc = NOC::RISCV_0_default, .compile_args = reader_ct_args}
     );
     auto writer = CreateKernel(
         program,
@@ -232,16 +246,37 @@ int main(int argc, char **argv) {
     auto inp_cb_num_tiles = C / 32; // buffer 32 in T and full C
     MakeCircularBuffer(program, core, tt::CB::c_in0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
     // weight_cb
-    MakeCircularBuffer(program, core, tt::CB::c_in1, weight_buffer->size(), weight_buffer->page_size(), tt::DataFormat::Float32);
+    const uint32_t weight_cb_num_tiles = C / 32; // Allocate space for C/32 tiles for reader
+    MakeCircularBuffer(program, core, tt::CB::c_in1, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
     // bias_cb
-    MakeCircularBuffer(program, core, tt::CB::c_in2, bias_buffer->size(), bias_buffer->page_size(), tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in2, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // one scalar
+    MakeCircularBuffer(program, core, tt::CB::c_in3, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // mean_recip scalar
+    MakeCircularBuffer(program, core, tt::CB::c_in4, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // epsilon scalar
+    MakeCircularBuffer(program, core, tt::CB::c_in5, tile_size_b, tile_size_b, tt::DataFormat::Float32);
     // out_cb
     MakeCircularBuffer(program, core, tt::CB::c_out0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // Stats CBs will contain 1 tile at a time, where the top row is 32 values for the currently processed input row
     // mean_cb
-    uint32_t stats_cb_num_pages = 1; // buffer one page of mean_buffer, size 32 
-    MakeCircularBuffer(program, core, tt::CB::c_out1, stats_cb_num_pages * mean_buffer->page_size(), mean_buffer->page_size(), tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_out1, tile_size_b, tile_size_b, tt::DataFormat::Float32);
     // rstd_cb
-    MakeCircularBuffer(program, core, tt::CB::c_out2, stats_cb_num_pages * rstd_buffer->page_size(), rstd_buffer->page_size(), tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_out2, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+
+    // intermediate compute buffers
+    // x - mean
+    MakeCircularBuffer(program, core, tt::CB::c_intermed0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // x - mean squared
+    MakeCircularBuffer(program, core, tt::CB::c_intermed1, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // mean
+    MakeCircularBuffer(program, core, tt::CB::c_intermed2, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // rstd
+    MakeCircularBuffer(program, core, tt::CB::c_intermed3, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // (x - mean) * rstd
+    MakeCircularBuffer(program, core, tt::CB::c_intermed4, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    // (x - mean) * rstd * weight
+    MakeCircularBuffer(program, core, tt::CB::c_intermed5, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
 
     SetRuntimeArgs(program, reader, core, {
         B,
@@ -280,20 +315,31 @@ int main(int argc, char **argv) {
     EnqueueReadBuffer(cq, rstd_buffer, rstd_tt, true);
 
 
-    std::vector<float> out_untilized = raw_to_fp32(untilize(out_tt, shape));
+    std::vector<float> tt_out_untilized = raw_to_fp32(untilize(out_tt, shape));
+    std::vector<float> tt_mean = raw_to_fp32(mean_tt);
+    std::vector<float> tt_rstd = raw_to_fp32(rstd_tt);
 
-    // check equality
-    for (int i = 0; i < inp_volume; i++) {
-        if (out_cpu[i] != out_untilized[i]) {
-            std::cerr << "Mismatch at index " << i << ": " << out_cpu[i] << " != " << out_untilized[i] << std::endl;
-        }
-        TT_FATAL(out_cpu[i] == out_untilized[i]);
-    }
+    validate_result_vec(out_cpu.data(), tt_out_untilized.data(), "out", B * T * C);
+    validate_result_vec(mean_cpu.data(), tt_mean.data(), "mean", B * T);
+    validate_result_vec(rstd_cpu.data(), tt_rstd.data(), "rstd", B * T);
+
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;
         CloseDevice(device);
         return -1;
     }
+    // check equality
+    // for (int i = 0; i < inp_volume; i++) {
+    //     if (out_cpu[i] != out_untilized[i]) {
+    //         std::cerr << "Mismatch at index " << i << ": " << out_cpu[i] << " != " << out_untilized[i] << std::endl;
+    //     }
+    //     TT_FATAL(out_cpu[i] == out_untilized[i]);
+    // }
+    // } catch (const std::exception& e) {
+    //     std::cerr << e.what() << std::endl;
+    //     CloseDevice(device);
+    //     return -1;
+    // }
 
     CloseDevice(device);
     return 0;

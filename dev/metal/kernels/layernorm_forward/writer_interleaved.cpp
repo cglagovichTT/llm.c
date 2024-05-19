@@ -16,7 +16,7 @@ void kernel_main()
 
     const uint32_t out_tile_size_bytes = get_tile_size(cb_out);
     constexpr DataFormat out_data_format = get_dataformat(cb_out);
-    DPRINT << "out_tile_size_bytes: " << out_tile_size_bytes << ENDL();
+    // DPRINT << "out_tile_size_bytes: " << out_tile_size_bytes << ENDL();
 
     const InterleavedAddrGenFast<true> out_gen = {
         .bank_base_address = out_addr,
@@ -26,15 +26,13 @@ void kernel_main()
 
     const InterleavedPow2AddrGen<true> mean_gen = {
         .bank_base_address = mean_addr,
-        .log_base_2_of_page_size = 5, // log(32)
-        // .data_format = mean_data_format, // The data format of the buffer
+        .log_base_2_of_page_size = 7, // log(32 * 4)
     };
 
     // rstd has same page size and dataformat as mean
     const InterleavedPow2AddrGen<true> rstd_gen = {
         .bank_base_address = rstd_addr,
-        .log_base_2_of_page_size = 5, // log(32)
-        // .data_format = mean_data_format, // The data format of the buffer
+        .log_base_2_of_page_size = 7, // log(32 * 4)
     };
 
     /* Enter writing loop */
@@ -60,8 +58,9 @@ void kernel_main()
             cb_wait_front(cb_rstd, 1);
             uint32_t mean_rd_ptr = get_read_ptr(cb_mean);
             uint32_t rstd_rd_ptr = get_read_ptr(cb_rstd);
-            noc_async_write_tile(stats_tile_idx, mean_gen, mean_rd_ptr);
-            noc_async_write_tile(stats_tile_idx, rstd_gen, rstd_rd_ptr);
+            // noc_async_write_tile(stats_tile_idx, mean_gen, mean_rd_ptr);
+            // noc_async_write_tile(stats_tile_idx, rstd_gen, rstd_rd_ptr);
+            // TODO: Figure out how we write from whatever this is to output buffer
             noc_async_write_barrier();
             cb_pop_front(cb_mean, 1);
             cb_pop_front(cb_rstd, 1);

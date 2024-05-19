@@ -100,7 +100,8 @@ void validate_result_vec(const D* device_result, const T* cpu_reference, const c
             printf("Mismatch of %s at %d: CPU_ref: %f vs GPU: %f\n", name, i, cpu_reference[i], (T)device_result[i]);
             nfaults ++;
             if (nfaults >= 10) {
-                exit(EXIT_FAILURE);
+                // exit(EXIT_FAILURE);
+                throw std::runtime_error("Too many mismatches");
             }
         }
     }
