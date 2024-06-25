@@ -218,19 +218,19 @@ int main(int argc, char **argv) {
     };
     auto reader = CreateKernel(
         program,
-        "/localdev/cglagovich/llm.c/dev/metal/kernels/layernorm_forward/reader_interleaved.cpp",
+        "kernels/layernorm_forward/reader_interleaved.cpp",
         core,
         DataMovementConfig {.processor = DataMovementProcessor::RISCV_0, .noc = NOC::RISCV_0_default, .compile_args = reader_ct_args}
     );
     auto writer = CreateKernel(
         program,
-        "/localdev/cglagovich/llm.c/dev/metal/kernels/layernorm_forward/writer_interleaved.cpp",
+        "kernels/layernorm_forward/writer_interleaved.cpp",
         core,
         DataMovementConfig {.processor = DataMovementProcessor::RISCV_1, .noc = NOC::RISCV_1_default}
     );
     auto compute = CreateKernel(
         program,
-        "/localdev/cglagovich/llm.c/dev/metal/kernels/layernorm_forward/compute.cpp",
+        "kernels/layernorm_forward/compute.cpp",
         core,
         ComputeConfig{
             .fp32_dest_acc_en = true,
