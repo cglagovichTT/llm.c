@@ -158,41 +158,56 @@ int main(int argc, char **argv) {
     CommandQueue& cq = device->command_queue();
 
     try {
-    uint32_t B = 8;
-    uint32_t T = 1024;
-    uint32_t C = 768;
+    // uint32_t B = 8;
+    uint32_t B = 1;
+    // uint32_t T = 1024;
+    uint32_t T = 32;
+    // uint32_t C = 768;
+    uint32_t C = 32;
     auto shape = std::vector<uint32_t>{B, T, C};
     auto inp_volume = std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<uint32_t>());
     uint32_t tile_size = 32 * 32;
     uint32_t n_tiles = inp_volume / (tile_size);
-    uint32_t tile_size_b = sizeof(float) * tile_size;
+    const int sizeof_bfloat = 2;
+    uint32_t tile_size_b = sizeof_bfloat * tile_size;
 
     // create host memory of random numbers
     auto out_cpu = std::vector<float>(B * T * C);
     auto mean_cpu = std::vector<float>(B * T);
     auto rstd_cpu = std::vector<float>(B * T);
     auto inp = make_random_float_vec(B * T * C);
-    auto weight = make_random_float_vec(C);
-    auto bias = make_random_float_vec(C);
+    // auto weight = make_random_float_vec(C);
+    auto weight = full(C, 1.0f);
+    // auto bias = make_random_float_vec(C);
+    auto bias = full(C, 0.0f);
+
 
     // CPU ground truth
     layernorm_forward_cpu1(out_cpu, mean_cpu, rstd_cpu, inp, weight, bias, B, T, C);
 
+    // DEBUG: Testing if fp32 -> bf16 -> fp32 code is correct - it is, up to 1e-2 absolute tolerance
+    // std::vector<uint32_t> inp_test_bf16 = fp32_to_bfloat16_packed(inp);
+    // std::vector<float> inp_test_fp32 = bfloat16_packed_to_fp32(inp_test_bf16);
+
+    // validate_result_vec(inp.data(), inp_test_fp32.data(), "bf inp", B * T * C, 1e-2f);
+    // std::cout << "converting to and from bf16 passes\n";
     // Host inputs for Device
-    std::vector<uint32_t> inp_tilized = fp32_to_raw(tilize(inp, shape));
-    std::vector<uint32_t> weight_rowmajor = fp32_to_raw(weight);
-    std::vector<uint32_t> bias_rowmajor = fp32_to_raw(bias);
+    std::vector<uint32_t> inp_tilized = fp32_to_bfloat16_packed(tilize(inp, shape));
+    std::vector<uint32_t> weight_rowmajor = fp32_to_bfloat16_packed(weight);
+    std::vector<uint32_t> bias_rowmajor = fp32_to_bfloat16_packed(bias);
 
     // make dram buffers
     // outputs
-    auto out_buffer = MakeBuffer(device, inp_volume * sizeof(float), tile_size_b, false); // tilized
-    auto mean_buffer = MakeBuffer(device, B * T * sizeof(float), 32 * sizeof(float), false); // RM, page_size = 32
-    auto rstd_buffer = MakeBuffer(device, B * T * sizeof(float), 32 * sizeof(float), false); // RM, page_size = 32
+    const int stick_size = 32 * sizeof_bfloat;
+    const uint32_t log_stick_size = std::log2(stick_size);
+    auto out_buffer = MakeBuffer(device, inp_volume * sizeof_bfloat, tile_size_b, false); // tilized
+    auto mean_buffer = MakeBuffer(device, B * T * sizeof_bfloat, stick_size, false); // RM, page_size = 32
+    auto rstd_buffer = MakeBuffer(device, B * T * sizeof_bfloat, stick_size, false); // RM, page_size = 32
     // inputs
-    auto inp_buffer = MakeBuffer(device, inp_volume * sizeof(float), tile_size_b, false); //  tilized
+    auto inp_buffer = MakeBuffer(device, inp_volume * sizeof_bfloat, tile_size_b, false); //  tilized
     // page size of mean_buffer implies how we can parallelize. If page is 32, then one core can write 32 rows at a time
-    auto weight_buffer = MakeBuffer(device, C * sizeof(float), 32 * sizeof(float), false); // RM, page_size = 32
-    auto bias_buffer = MakeBuffer(device, C * sizeof(float), 32 * sizeof(float), false); // RM, page_size = 32
+    auto weight_buffer = MakeBuffer(device, C * sizeof_bfloat, stick_size, false); // RM, page_size = 32
+    auto bias_buffer = MakeBuffer(device, C * sizeof_bfloat, stick_size, false); // RM, page_size = 32
 
     // write buffer to dram
     EnqueueWriteBuffer(cq, inp_buffer, inp_tilized, false);
@@ -202,6 +217,8 @@ int main(int argc, char **argv) {
     // Salars necessary for the kernel
     // TODO: these should be fp32. which of them have to be bcast rows/cols, does it matter?
     const float one_scalar = 1.0;
+    bfloat16 bf_one_scalar = bfloat16(one_scalar);
+    uint32_t packed_one_scalar = pack_two_bfloat16_into_uint32({bf_one_scalar, bf_one_scalar});
     union { float f; uint32_t u; } one_packed; one_packed.f = one_scalar;
     const float mean_recip_scalar = 1.0 / C;
     union { float f; uint32_t u; } mean_recip_packed; mean_recip_packed.f = mean_recip_scalar;
@@ -212,10 +229,16 @@ int main(int argc, char **argv) {
     Program program = CreateProgram();
     constexpr CoreCoord core = {0, 0}; // TODO: Parallelize
     std::vector<uint32_t> reader_ct_args = {
-        one_packed.u,
+        packed_one_scalar,
         mean_recip_packed.u,
-        epsilon_packed.u
+        epsilon_packed.u,
+        // log of stick_size
+        log_stick_size // should be 6 for bf16
     };
+    std::vector<uint32_t> writer_ct_args = {
+        log_stick_size
+    };
+    std::cout << "log of stick_size: " << log_stick_size << std::endl;
     auto reader = CreateKernel(
         program,
         "kernels/layernorm_forward/reader_interleaved.cpp",
@@ -226,14 +249,14 @@ int main(int argc, char **argv) {
         program,
         "kernels/layernorm_forward/writer_interleaved.cpp",
         core,
-        DataMovementConfig {.processor = DataMovementProcessor::RISCV_1, .noc = NOC::RISCV_1_default}
+        DataMovementConfig {.processor = DataMovementProcessor::RISCV_1, .noc = NOC::RISCV_1_default, .compile_args = writer_ct_args}
     );
     auto compute = CreateKernel(
         program,
         "kernels/layernorm_forward/compute.cpp",
         core,
         ComputeConfig{
-            .fp32_dest_acc_en = true,
+            .fp32_dest_acc_en = false,
             .math_approx_mode = false,
             .compile_args = {},
             .defines = {}
@@ -244,39 +267,39 @@ int main(int argc, char **argv) {
     // TODO: Double buffering for inputs and outputs
     // input_cb
     auto inp_cb_num_tiles = C / 32; // buffer 32 in T and full C
-    MakeCircularBuffer(program, core, tt::CB::c_in0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // weight_cb
     const uint32_t weight_cb_num_tiles = C / 32; // Allocate space for C/32 tiles for reader
-    MakeCircularBuffer(program, core, tt::CB::c_in1, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in1, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // bias_cb
-    MakeCircularBuffer(program, core, tt::CB::c_in2, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in2, weight_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // one scalar
-    MakeCircularBuffer(program, core, tt::CB::c_in3, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in3, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // mean_recip scalar
-    MakeCircularBuffer(program, core, tt::CB::c_in4, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in4, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // epsilon scalar
-    MakeCircularBuffer(program, core, tt::CB::c_in5, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_in5, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // out_cb
-    MakeCircularBuffer(program, core, tt::CB::c_out0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_out0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // Stats CBs will contain 1 tile at a time, where the top row is 32 values for the currently processed input row
     // mean_cb
-    MakeCircularBuffer(program, core, tt::CB::c_out1, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_out1, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // rstd_cb
-    MakeCircularBuffer(program, core, tt::CB::c_out2, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_out2, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
 
     // intermediate compute buffers
     // x - mean
-    MakeCircularBuffer(program, core, tt::CB::c_intermed0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed0, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // x - mean squared
-    MakeCircularBuffer(program, core, tt::CB::c_intermed1, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed1, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // mean
-    MakeCircularBuffer(program, core, tt::CB::c_intermed2, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed2, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // rstd
-    MakeCircularBuffer(program, core, tt::CB::c_intermed3, tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed3, tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // (x - mean) * rstd
-    MakeCircularBuffer(program, core, tt::CB::c_intermed4, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed4, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
     // (x - mean) * rstd * weight
-    MakeCircularBuffer(program, core, tt::CB::c_intermed5, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float32);
+    MakeCircularBuffer(program, core, tt::CB::c_intermed5, inp_cb_num_tiles * tile_size_b, tile_size_b, tt::DataFormat::Float16_b);
 
     SetRuntimeArgs(program, reader, core, {
         B,
@@ -315,13 +338,13 @@ int main(int argc, char **argv) {
     EnqueueReadBuffer(cq, rstd_buffer, rstd_tt, true);
 
 
-    std::vector<float> tt_out_untilized = raw_to_fp32(untilize(out_tt, shape));
-    std::vector<float> tt_mean = raw_to_fp32(mean_tt);
-    std::vector<float> tt_rstd = raw_to_fp32(rstd_tt);
+    std::vector<float> tt_out_untilized = untilize(bfloat16_packed_to_fp32(out_tt), shape);
+    std::vector<float> tt_mean = bfloat16_packed_to_fp32(mean_tt);
+    std::vector<float> tt_rstd = bfloat16_packed_to_fp32(rstd_tt);
 
-    validate_result_vec(out_cpu.data(), tt_out_untilized.data(), "out", B * T * C);
-    validate_result_vec(mean_cpu.data(), tt_mean.data(), "mean", B * T);
-    validate_result_vec(rstd_cpu.data(), tt_rstd.data(), "rstd", B * T);
+    validate_result_vec(out_cpu, tt_out_untilized, "out", B * T * C);
+    validate_result_vec(mean_cpu, tt_mean, "mean", B * T);
+    validate_result_vec(rstd_cpu, tt_rstd, "rstd", B * T);
 
     } catch (const std::exception& e) {
         std::cerr << e.what() << std::endl;

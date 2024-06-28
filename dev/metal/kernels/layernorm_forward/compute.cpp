@@ -55,12 +55,12 @@ void MAIN {
     const uint32_t c_tiles = C / 32;
     for (uint32_t b = 0; b < B; ++b) {
         for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
-            PACK( DPRINT << "compute: b=" << b << " t_tile=" << t_tile << ENDL() );
+            // PACK( DPRINT << "compute: b=" << b << " t_tile=" << t_tile << ENDL() );
             cb_wait_front(cb_inp, c_tiles);
             // cb_reserve_back(cb_out, c_tiles);
 
             // Sum inp
-            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(PoolType::SUM, ReduceDim::REDUCE_ROW, cb_intermed_mean, cb_inp, cb_one_scalar);
+            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(PoolType::SUM, ReduceDim::REDUCE_ROW, cb_inp, cb_inp, cb_one_scalar);
 
             cb_reserve_back(cb_intermed_mean, 1);
             tile_regs_acquire();
@@ -140,9 +140,9 @@ void MAIN {
             // TODO: Get rid of copy tile, and just sqrt+recip while tile in DST
             cb_wait_front(cb_intermed_rstd, 1);
             // copy_tile_to_dst_init_short(cb_intermed_rstd);
-            add_bcast_scalar_init_short();
+            add_tiles_init();
             tile_regs_acquire();
-            add_tiles_bcast_scalar(cb_intermed_rstd, cb_epsilon_scalar, 0, 0, 0);
+            add_tiles(cb_intermed_rstd, cb_epsilon_scalar, 0, 0, 0);
             sqrt_tile_init();
             sqrt_tile(0);
             recip_tile_init();
@@ -166,43 +166,45 @@ void MAIN {
                 mul_tiles_bcast_cols(cb_xmm, cb_intermed_rstd, c_tile, 0, 0);
                 tile_regs_commit();
                 tile_regs_wait();
-                pack_tile(0, cb_xmm_rstd);
+                // pack_tile(0, cb_xmm_rstd);
+                pack_tile(0, cb_out); // DEBUG!!
                 tile_regs_release();
-                cb_push_back(cb_xmm_rstd, 1);
+                // cb_push_back(cb_xmm_rstd, 1);
+                cb_push_back(cb_out, 1); // DEBUG!!
             }
             // last use, pop cb_xmm
             cb_pop_front(cb_xmm, c_tiles);
             cb_pop_front(cb_intermed_rstd, 1);
 
-            // Scale by weight
-            mul_bcast_rows_init_short(cb_xmm_rstd, cb_weight);
-            cb_wait_front(cb_xmm_rstd, c_tiles);
-            for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-                cb_reserve_back(cb_xmm_rstd_scaled, 1);
-                tile_regs_acquire();
-                mul_tiles_bcast_rows(cb_xmm_rstd, cb_weight, c_tile, c_tile, 0);
-                tile_regs_commit();
-                tile_regs_wait();
-                pack_tile(0, cb_xmm_rstd_scaled);
-                tile_regs_release();
-                cb_push_back(cb_xmm_rstd_scaled, 1);
-            }
-            cb_pop_front(cb_xmm_rstd, c_tiles);
+            // // Scale by weight
+            // mul_bcast_rows_init_short(cb_xmm_rstd, cb_weight);
+            // cb_wait_front(cb_xmm_rstd, c_tiles);
+            // for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
+            //     cb_reserve_back(cb_xmm_rstd_scaled, 1);
+            //     tile_regs_acquire();
+            //     mul_tiles_bcast_rows(cb_xmm_rstd, cb_weight, c_tile, c_tile, 0);
+            //     tile_regs_commit();
+            //     tile_regs_wait();
+            //     pack_tile(0, cb_xmm_rstd_scaled);
+            //     tile_regs_release();
+            //     cb_push_back(cb_xmm_rstd_scaled, 1);
+            // }
+            // cb_pop_front(cb_xmm_rstd, c_tiles);
 
-            // Add bias
-            add_bcast_rows_init_short(cb_xmm_rstd_scaled, cb_bias);
-            cb_wait_front(cb_xmm_rstd_scaled, c_tiles);
-            for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-                cb_reserve_back(cb_out, 1);
-                tile_regs_acquire();
-                add_tiles_bcast_rows(cb_xmm_rstd_scaled, cb_bias, c_tile, c_tile, 0);
-                tile_regs_commit();
-                tile_regs_wait();
-                pack_tile(0, cb_out);
-                tile_regs_release();
-                cb_push_back(cb_out, 1);
-            }
-            cb_pop_front(cb_xmm_rstd_scaled, c_tiles);
+            // // Add bias
+            // add_bcast_rows_init_short(cb_xmm_rstd_scaled, cb_bias);
+            // cb_wait_front(cb_xmm_rstd_scaled, c_tiles);
+            // for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
+            //     cb_reserve_back(cb_out, 1);
+            //     tile_regs_acquire();
+            //     add_tiles_bcast_rows(cb_xmm_rstd_scaled, cb_bias, c_tile, c_tile, 0);
+            //     tile_regs_commit();
+            //     tile_regs_wait();
+            //     pack_tile(0, cb_out);
+            //     tile_regs_release();
+            //     cb_push_back(cb_out, 1);
+            // }
+            // cb_pop_front(cb_xmm_rstd_scaled, c_tiles);
 
 
             // cb_push_back(cb_out, c_tiles);

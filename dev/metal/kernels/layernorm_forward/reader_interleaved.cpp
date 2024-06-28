@@ -41,6 +41,45 @@ FORCE_INLINE void generate_reduce_scaler_fp32(const uint32_t cb_id, const uint32
     cb_push_back(cb_id, 1);
 }
 
+FORCE_INLINE void generate_reduce_scaler(const uint32_t cb_id, const uint32_t scaler) {
+    cb_reserve_back(cb_id, 1);
+
+    constexpr uint32_t num_zeros_reads = 2048 / MEM_ZEROS_SIZE;
+    uint64_t zeros_noc_addr = get_noc_addr(MEM_ZEROS_BASE);
+    uint32_t write_addr = get_write_ptr(cb_id);
+    volatile tt_l1_ptr uint32_t* ptr = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(write_addr);
+
+    // Fill tile with zeros
+    for (uint32_t i = 0; i < num_zeros_reads; ++i) {
+        noc_async_read(zeros_noc_addr, write_addr, MEM_ZEROS_SIZE);
+        write_addr += MEM_ZEROS_SIZE;
+    }
+    noc_async_read_barrier();
+
+    if (scaler != 0) {
+        for (int k = 0; k < 4; ++k) {
+            uint32_t idx = k << 7;
+            for (int j = 0; j < 8; ++j) {
+                ptr[idx + j] = scaler;
+            }
+        }
+    }
+    cb_push_back(cb_id, 1);
+}
+
+FORCE_INLINE void generate_bcast_col_scalar(const uint32_t cb_id, const uint32_t scalar) {
+    const uint16_t scalar_val = scalar>>16;
+    cb_reserve_back(cb_id, 1);
+    volatile tt_l1_ptr uint16_t* ptr = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(get_write_ptr(cb_id));
+    for (int k = 0; k < 4; k+=2) {
+        uint32_t idx = k << 8;
+        for (int j = 0; j < 256; j+=16) {
+            ptr[idx + j] = scalar_val;
+        }
+    }
+    cb_push_back(cb_id, 1);
+}
+
 FORCE_INLINE void generate_bcast_col_scalar_fp32(const uint32_t cb_id, const uint32_t scalar) {
     // const uint16_t scalar_val = scalar>>16;
     cb_reserve_back(cb_id, 1);
@@ -58,13 +97,17 @@ FORCE_INLINE void generate_bcast_col_scalar_fp32(const uint32_t cb_id, const uin
 
 void print_tile_contents(const uint32_t cb_id, const uint32_t tile_idx) {
     const uint32_t tile_size_bytes = get_tile_size(cb_id);
-    volatile tt_l1_ptr uint32_t* tile = reinterpret_cast<volatile tt_l1_ptr uint32_t*>(get_read_ptr(cb_id) + tile_idx * tile_size_bytes);
+    volatile tt_l1_ptr uint16_t* tile = reinterpret_cast<volatile tt_l1_ptr uint16_t*>(get_read_ptr(cb_id) + tile_idx * tile_size_bytes);
     for (int k = 0; k < 4; ++k) {
         DPRINT << "Face " << k << ENDL();
         uint32_t idx = k << 8; // Start index of the face
         for (int i = 0; i < 16; ++i) {
             for (int j = 0; j < 16; ++j) {
-                DPRINT << convertToFloat(tile[idx + i * 16 + j]) << " ";
+                uint32_t val = tile[idx + i * 16 + j];
+                float f1 = convertToFloat(((uint32_t)val)<<16);
+                // float f1 = convertToFloat((val & 0xFFFF0000));
+                // float f2 = convertToFloat((val & 0x0000FFFF)<<16);
+                DPRINT << f1 << " ";
             }
             DPRINT << ENDL();
         }
@@ -84,6 +127,7 @@ void kernel_main()
     constexpr uint32_t one_scalar = get_compile_time_arg_val(0);
     constexpr uint32_t mean_scalar = get_compile_time_arg_val(1);
     constexpr uint32_t epsilon_scalar = get_compile_time_arg_val(2);
+    constexpr uint32_t log_page_size = get_compile_time_arg_val(3);
 
     constexpr uint32_t cb_inp = tt::CB::c_in0;
     constexpr uint32_t cb_weight = tt::CB::c_in1;
@@ -106,26 +150,26 @@ void kernel_main()
 
     const InterleavedPow2AddrGen<true> weight_gen = {
         .bank_base_address = weight_addr,
-        .log_base_2_of_page_size = 7, // log(32 * 4)
+        .log_base_2_of_page_size = log_page_size,
     };
     DPRINT << "weight_gen base_address=" << weight_gen.bank_base_address << ENDL();
 
     // Bias has same page size and dataformat as weight
     const InterleavedPow2AddrGen<true> bias_gen = {
         .bank_base_address = bias_addr,
-        .log_base_2_of_page_size = 7, // log(32 * 4)
+        .log_base_2_of_page_size = log_page_size,
     };
     DPRINT << "bias_gen base_address=" << bias_gen.bank_base_address << ENDL();
 
     // Generate constant tiles for layernorm compute
-    generate_reduce_scaler_fp32(cb_one_scalar, one_scalar);
+    generate_reduce_scaler(cb_one_scalar, one_scalar);
     // DPRINT << "cb_one_scalar:" << ENDL();
     // print_tile_contents(cb_one_scalar, 0);
     // Bcast scalars
-    generate_bcast_col_scalar_fp32(cb_mean_recip_scalar, mean_scalar);
+    generate_bcast_col_scalar(cb_mean_recip_scalar, mean_scalar);
     // DPRINT << "cb_mean_recip_scalar:" << ENDL();
     // print_tile_contents(cb_mean_recip_scalar, 0);
-    generate_bcast_col_scalar_fp32(cb_epsilon_scalar, epsilon_scalar);
+    generate_bcast_col_scalar(cb_epsilon_scalar, epsilon_scalar);
     // DPRINT << "cb_epsilon_scalar:" << ENDL();
     // print_tile_contents(cb_epsilon_scalar, 0);
 
@@ -133,9 +177,9 @@ void kernel_main()
 
     /* Read weight and bias once */
     // How many bytes is one vector of 16 weight datums
-    constexpr uint32_t weight_face_fp32_bytes = 16 * 4;
+    constexpr uint32_t face_row_bf16_byte = 16 * 2;
     // How many bytes do you stride to get to the next face
-    constexpr uint32_t face_fp32_bytes = 16 * 16 * 4;
+    constexpr uint32_t face_bf16_bytes = 16 * 16 * 2;
     
     cb_reserve_back(cb_weight, num_weight_pages);
     cb_reserve_back(cb_bias, num_weight_pages);
@@ -152,17 +196,17 @@ void kernel_main()
         uint64_t weight_dram_noc_addr = get_noc_addr(i, weight_gen);
         // DPRINT << "reader: FACE 0 weight_dram_noc_addr=" << weight_dram_noc_addr << ENDL();
         // DPRINT << "reader: FACE 0 weight_wr_ptr=" << weight_wr_ptr << ENDL();
-        noc_async_read(weight_dram_noc_addr, weight_wr_ptr, weight_face_fp32_bytes);
-        weight_dram_noc_addr += weight_face_fp32_bytes;
+        noc_async_read(weight_dram_noc_addr, weight_wr_ptr, face_row_bf16_byte);
+        weight_dram_noc_addr += face_row_bf16_byte;
         // DPRINT << "reader: FACE 1 weight_dram_noc_addr=" << weight_dram_noc_addr << ENDL();
         // DPRINT << "reader: FACE 1 weight_wr_ptr=" << weight_wr_ptr + face_fp32_bytes << ENDL();
-        noc_async_read(weight_dram_noc_addr, weight_wr_ptr + face_fp32_bytes, weight_face_fp32_bytes);
+        noc_async_read(weight_dram_noc_addr, weight_wr_ptr + face_bf16_bytes, face_row_bf16_byte);
         weight_wr_ptr += weight_tile_size_bytes;
 
         uint64_t bias_dram_noc_addr = get_noc_addr(i, bias_gen);
-        noc_async_read(bias_dram_noc_addr, bias_wr_ptr, weight_face_fp32_bytes);
-        bias_dram_noc_addr += weight_face_fp32_bytes;
-        noc_async_read(bias_dram_noc_addr, bias_wr_ptr + face_fp32_bytes, weight_face_fp32_bytes);
+        noc_async_read(bias_dram_noc_addr, bias_wr_ptr, face_row_bf16_byte);
+        bias_dram_noc_addr += face_row_bf16_byte;
+        noc_async_read(bias_dram_noc_addr, bias_wr_ptr + face_bf16_bytes, face_row_bf16_byte);
         bias_wr_ptr += weight_tile_size_bytes;
 
         // DPRINT << "cb_weight:" << ENDL();
@@ -179,7 +223,7 @@ void kernel_main()
     uint32_t inp_tile_idx = 0;
     for (uint32_t b = 0; b < B; ++b) {
         for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
-            DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
+            // DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
 
             cb_reserve_back(cb_inp, c_tiles);
             uint32_t inp_wr_ptr = get_write_ptr(cb_inp);
@@ -187,8 +231,10 @@ void kernel_main()
                 noc_async_read_tile(inp_tile_idx, inp_gen, inp_wr_ptr);
                 inp_wr_ptr += inp_tile_size_bytes;
                 ++inp_tile_idx;
+                noc_async_read_barrier();
+                DPRINT << "cb_inp:" << ENDL();
+                print_tile_contents(cb_inp, t_tile);
             }
-            noc_async_read_barrier();
             cb_push_back(cb_inp, c_tiles);
         
         }
