@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <cmath>
 #include <vector>
+#include "common/bfloat16.hpp"
 
 using namespace tt::tt_metal;
 
@@ -34,6 +35,14 @@ std::vector<float> make_random_float_vec(size_t N) {
     auto arr = std::vector<float>(N);
     for (size_t i = 0; i < N; i++) {
         arr[i] = ((float)rand() / RAND_MAX) * 2.0 - 1.0; // range -1..1
+    }
+    return arr;
+}
+
+std::vector<float> full(size_t N, float val) {
+    auto arr = std::vector<float>(N);
+    for (size_t i = 0; i < N; i++) {
+        arr[i] = val;
     }
     return arr;
 }
@@ -89,6 +98,29 @@ std::vector<float> raw_to_fp32(const std::vector<uint32_t>& raw) {
 
 template<class D, class T>
 void validate_result_vec(const D* device_result, const T* cpu_reference, const char* name, std::size_t num_elements, T tolerance=1e-4) {
+    int nfaults = 0;
+    for (int i = 0; i < num_elements; i++) {
+        // print the first few comparisons
+        if (i < 5) {
+            printf("%f %f\n", cpu_reference[i], (T)device_result[i]);
+        }
+        // ensure correctness for all elements. We can set an "ignore" mask by writing NaN
+        if (fabs(cpu_reference[i] - (T)device_result[i]) > tolerance && std::isfinite(cpu_reference[i])) {
+            printf("Mismatch of %s at %d: CPU_ref: %f vs GPU: %f\n", name, i, cpu_reference[i], (T)device_result[i]);
+            nfaults ++;
+            if (nfaults >= 10) {
+                // exit(EXIT_FAILURE);
+                throw std::runtime_error("Too many mismatches");
+            }
+        }
+    }
+}
+
+template<class D, class T>
+void validate_result_vec(const std::vector<D> device_result, const std::vector<T> cpu_reference, const char* name, std::size_t num_elements, T tolerance=1e-4) {
+    if (!(device_result.size() == cpu_reference.size() && device_result.size() == num_elements)) {
+        throw std::runtime_error("Mismatched sizes");
+    }
     int nfaults = 0;
     for (int i = 0; i < num_elements; i++) {
         // print the first few comparisons
@@ -256,4 +288,42 @@ CBHandle MakeCircularBufferFP32(Program& program, const CoreCoord& core, tt::CB 
 {
     constexpr uint32_t tile_size = 4 * (32 * 32);
     return MakeCircularBuffer(program, core, cb, n_tiles * tile_size, tile_size, tt::DataFormat::Float32);
+}
+
+std::vector<uint32_t> fp32_to_bfloat16_packed(const std::vector<float>& input) {
+    std::vector<uint32_t> result;
+    result.reserve((input.size() + 1) / 2); // We'll pack two bfloat16 values per uint32_t
+
+    for (size_t i = 0; i < input.size(); i += 2) {
+        bfloat16 bf16_1(input[i]);
+        uint32_t packed = bf16_1.to_uint16();
+
+        if (i + 1 < input.size()) {
+            bfloat16 bf16_2(input[i + 1]);
+            packed |= (static_cast<uint32_t>(bf16_2.to_uint16()) << 16);
+        }
+
+        result.push_back(packed);
+    }
+
+    return result;
+}
+
+std::vector<float> bfloat16_packed_to_fp32(const std::vector<uint32_t>& input) {
+    std::vector<float> result;
+    result.reserve(input.size() * 2);  // Each uint32_t contains two bfloat16 values
+
+    for (uint32_t packed : input) {
+        // Extract lower 16 bits
+        uint16_t lower = packed & 0xFFFF;
+        bfloat16 bf16_1(lower);
+        result.push_back(bf16_1.to_float());
+
+        // Extract upper 16 bits
+        uint16_t upper = packed >> 16;
+        bfloat16 bf16_2(upper);
+        result.push_back(bf16_2.to_float());
+    }
+
+    return result;
 }

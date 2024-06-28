@@ -9,6 +9,9 @@ void kernel_main()
     const uint32_t out_addr = get_arg_val<uint32_t>(3);
     const uint32_t mean_addr = get_arg_val<uint32_t>(4);
     const uint32_t rstd_addr = get_arg_val<uint32_t>(5);
+    
+    constexpr uint32_t log_page_size = get_compile_time_arg_val(0);
+
 
     constexpr uint32_t cb_out = tt::CB::c_out0;
     constexpr uint32_t cb_mean = tt::CB::c_out1;
@@ -26,13 +29,13 @@ void kernel_main()
 
     const InterleavedPow2AddrGen<true> mean_gen = {
         .bank_base_address = mean_addr,
-        .log_base_2_of_page_size = 7, // log(32 * 4)
+        .log_base_2_of_page_size = log_page_size,
     };
 
     // rstd has same page size and dataformat as mean
     const InterleavedPow2AddrGen<true> rstd_gen = {
         .bank_base_address = rstd_addr,
-        .log_base_2_of_page_size = 7, // log(32 * 4)
+        .log_base_2_of_page_size = log_page_size,
     };
 
     /* Enter writing loop */
@@ -41,7 +44,7 @@ void kernel_main()
     uint32_t stats_tile_idx = 0;
     for (uint32_t b = 0; b < B; ++b) {
         for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
-            DPRINT << "writer: b=" << b << " t_tile=" << t_tile << ENDL();
+            // DPRINT << "writer: b=" << b << " t_tile=" << t_tile << ENDL();
 
             cb_wait_front(cb_out, c_tiles);
             uint32_t out_rd_ptr = get_read_ptr(cb_out);
