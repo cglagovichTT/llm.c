@@ -9,6 +9,10 @@ void kernel_main()
     const uint32_t out_addr = get_arg_val<uint32_t>(3);
     const uint32_t mean_addr = get_arg_val<uint32_t>(4);
     const uint32_t rstd_addr = get_arg_val<uint32_t>(5);
+    const uint32_t start_b = get_arg_val<uint32_t>(6);
+    const uint32_t start_t = get_arg_val<uint32_t>(7);
+    const uint32_t end_b = get_arg_val<uint32_t>(8);
+    const uint32_t end_t = get_arg_val<uint32_t>(9);
     
     constexpr uint32_t log_page_size = get_compile_time_arg_val(0);
 
@@ -38,12 +42,17 @@ void kernel_main()
         .log_base_2_of_page_size = log_page_size,
     };
 
+    // How many bytes is one vector of 16 weight datums
+    constexpr uint32_t face_row_bf16_byte = 16 * 2;
+    // How many bytes do you stride to get to the next face
+    constexpr uint32_t face_bf16_bytes = 16 * 16 * 2;
+
     /* Enter writing loop */
     const uint32_t c_tiles = C / 32;
     uint32_t out_tile_idx = 0;
     uint32_t stats_tile_idx = 0;
-    for (uint32_t b = 0; b < B; ++b) {
-        for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
+    for (uint32_t b = start_b; b < end_b; ++b) {
+        for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
             // DPRINT << "writer: b=" << b << " t_tile=" << t_tile << ENDL();
 
             cb_wait_front(cb_out, c_tiles);
@@ -61,9 +70,19 @@ void kernel_main()
             cb_wait_front(cb_rstd, 1);
             uint32_t mean_rd_ptr = get_read_ptr(cb_mean);
             uint32_t rstd_rd_ptr = get_read_ptr(cb_rstd);
-            // noc_async_write_tile(stats_tile_idx, mean_gen, mean_rd_ptr);
-            // noc_async_write_tile(stats_tile_idx, rstd_gen, rstd_rd_ptr);
-            // TODO: Figure out how we write from whatever this is to output buffer
+
+            uint64_t mean_dram_noc_addr = get_noc_addr(stats_tile_idx, mean_gen);
+            noc_async_write(mean_rd_ptr, mean_dram_noc_addr, face_row_bf16_byte);
+            mean_dram_noc_addr += face_row_bf16_byte;
+            mean_rd_ptr += face_bf16_bytes;
+            noc_async_write(mean_rd_ptr, mean_dram_noc_addr, face_row_bf16_byte);
+
+            uint64_t rstd_dram_noc_addr = get_noc_addr(stats_tile_idx, rstd_gen);
+            noc_async_write(rstd_rd_ptr, rstd_dram_noc_addr, face_row_bf16_byte);
+            rstd_dram_noc_addr += face_row_bf16_byte;
+            rstd_rd_ptr += face_bf16_bytes;
+            noc_async_write(rstd_rd_ptr, rstd_dram_noc_addr, face_row_bf16_byte);
+
             noc_async_write_barrier();
             cb_pop_front(cb_mean, 1);
             cb_pop_front(cb_rstd, 1);

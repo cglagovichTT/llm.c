@@ -35,12 +35,26 @@ endif()
 message(STATUS "TT_METAL_HOME: $ENV{TT_METAL_HOME}")
 message(STATUS "ARCH_NAME: $ENV{ARCH_NAME}")
 
+# Find Boost
+find_package(Boost REQUIRED COMPONENTS thread filesystem system regex)
+
+# Find NUMA library
+find_library(NUMA_LIBRARY NAMES numa)
+if (NOT NUMA_LIBRARY)
+    message(FATAL_ERROR "NUMA library not found")
+endif()
+
+set(REFLECT_INCLUDE_DIR "$ENV{TT_METAL_HOME}/.cpmcache/reflect/e75434c4c5f669e4a74e4d84e0a30d7249c1e66f")
+
+
+
 # Define a function to add targets with common properties
 function(add_common_target target_name)
     add_executable(${target_name} ${target_name}.cpp)
     
     set(ARCH_NAME $ENV{ARCH_NAME})
     set(ARCH_DEFINES "${ARCH_NAME}_defines")
+    set(UMD_HOME "$ENV{TT_METAL_HOME}/tt_metal/third_party/umd")
     
     set(INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -58,6 +72,11 @@ function(add_common_target target_name)
         $ENV{TT_METAL_HOME}/tt_metal/third_party/umd/include/wormhole_b0
         $ENV{TT_METAL_HOME}/tt_metal/third_party/umd/src/firmware/riscv/wormhole
         $ENV{TT_METAL_HOME}/tt_metal/hostdevcommon
+        ${UMD_HOME}/device/${ARCH_NAME}
+        ${UMD_HOME}/src/firmware/riscv/${ARCH_NAME}
+        $ENV{TT_METAL_HOME}/tt_metal/third_party/reflect
+        ${Boost_INCLUDE_DIRS}
+        ${REFLECT_INCLUDE_DIR}
     )
 
     target_include_directories(${target_name} PRIVATE ${INCLUDE_DIRS})
@@ -72,17 +91,23 @@ function(add_common_target target_name)
         FMT_HEADER_ONLY
         TT_METAL_VERSIM_DISABLED
     )
+
+
     target_compile_options(${target_name} PRIVATE
-        -mavx2 -fPIC -fvisibility-inlines-hidden -fno-lto -stdlib=libc++
+        -mavx2 -fPIC -DFMT_HEADER_ONLY -fvisibility-inlines-hidden -fno-lto -stdlib=libc++
+        -Werror -Wdelete-non-virtual-dtor -Wreturn-type -Wswitch -Wuninitialized -Wno-unused-parameter
+        -Wno-deprecated-this-capture  # Add this line to disable the 'this' capture warning
     )
+
     target_link_directories(${target_name} PRIVATE
         $ENV{TT_METAL_HOME}/build/lib
     )
     target_link_libraries(${target_name} PRIVATE
         tt_metal 
         yaml-cpp
-        dl z boost_thread boost_filesystem boost_system boost_regex pthread atomic hwloc numa
+        dl z pthread atomic hwloc ${NUMA_LIBRARY}
         c++ c++abi
+        ${Boost_LIBRARIES}
     )
 endfunction()
 

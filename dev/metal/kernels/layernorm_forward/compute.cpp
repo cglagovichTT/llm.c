@@ -10,6 +10,7 @@
 #include "compute_kernel_api/eltwise_unary/sqrt.h"
 #include "compute_kernel_api/eltwise_unary/recip.h"
 #include "compute_kernel_api/bcast.h"
+#include "compute_kernel_api/transpose_wh.h"
 
 #include "debug/dprint.h"
 
@@ -20,6 +21,10 @@ void MAIN {
     const uint32_t B = get_arg_val<uint32_t>(0);
     const uint32_t T = get_arg_val<uint32_t>(1);
     const uint32_t C = get_arg_val<uint32_t>(2);
+    const uint32_t start_b = get_arg_val<uint32_t>(3);
+    const uint32_t start_t = get_arg_val<uint32_t>(4);
+    const uint32_t end_b = get_arg_val<uint32_t>(5);
+    const uint32_t end_t = get_arg_val<uint32_t>(6);
 
     constexpr uint32_t cb_inp = tt::CB::c_in0;
     constexpr uint32_t cb_weight = tt::CB::c_in1;
@@ -53,8 +58,8 @@ void MAIN {
 
     /* Enter compute loop */
     const uint32_t c_tiles = C / 32;
-    for (uint32_t b = 0; b < B; ++b) {
-        for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
+    for (uint32_t b = start_b; b < end_b; ++b) {
+        for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
             // PACK( DPRINT << "compute: b=" << b << " t_tile=" << t_tile << ENDL() );
             cb_wait_front(cb_inp, c_tiles);
             // cb_reserve_back(cb_out, c_tiles);
@@ -102,7 +107,7 @@ void MAIN {
             }
             // Clear out cb_pop_front since this is its last use
             cb_pop_front(cb_inp, c_tiles);
-            cb_pop_front(cb_intermed_mean, 1);
+            // cb_pop_front(cb_intermed_mean, 1);
 
             // (x - mean) **2
             mul_tiles_init(cb_xmm, cb_xmm);
@@ -135,6 +140,19 @@ void MAIN {
             // last use of cb_xmm2
             cb_pop_front(cb_xmm2, c_tiles);
 
+            // Get mean(x - mean) ** 2
+            cb_wait_front(cb_intermed_rstd, 1);
+            mul_tiles_init(cb_intermed_rstd, cb_mean_recip_scalar);
+            tile_regs_acquire();
+            mul_tiles(cb_intermed_rstd, cb_mean_recip_scalar, 0, 0, 0);
+            tile_regs_commit();
+            cb_pop_front(cb_intermed_rstd, 1);
+            cb_reserve_back(cb_intermed_rstd, 1);
+            tile_regs_wait();
+            pack_tile(0, cb_intermed_rstd);
+            tile_regs_release();
+            cb_push_back(cb_intermed_rstd, 1);
+
             // Get rstd
             // TODO: Add epsilon!
             // TODO: Get rid of copy tile, and just sqrt+recip while tile in DST
@@ -166,58 +184,63 @@ void MAIN {
                 mul_tiles_bcast_cols(cb_xmm, cb_intermed_rstd, c_tile, 0, 0);
                 tile_regs_commit();
                 tile_regs_wait();
-                // pack_tile(0, cb_xmm_rstd);
-                pack_tile(0, cb_out); // DEBUG!!
+                pack_tile(0, cb_xmm_rstd);
                 tile_regs_release();
-                // cb_push_back(cb_xmm_rstd, 1);
-                cb_push_back(cb_out, 1); // DEBUG!!
+                cb_push_back(cb_xmm_rstd, 1);
             }
             // last use, pop cb_xmm
             cb_pop_front(cb_xmm, c_tiles);
-            cb_pop_front(cb_intermed_rstd, 1);
+            // cb_pop_front(cb_intermed_rstd, 1);
 
-            // // Scale by weight
-            // mul_bcast_rows_init_short(cb_xmm_rstd, cb_weight);
-            // cb_wait_front(cb_xmm_rstd, c_tiles);
-            // for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-            //     cb_reserve_back(cb_xmm_rstd_scaled, 1);
-            //     tile_regs_acquire();
-            //     mul_tiles_bcast_rows(cb_xmm_rstd, cb_weight, c_tile, c_tile, 0);
-            //     tile_regs_commit();
-            //     tile_regs_wait();
-            //     pack_tile(0, cb_xmm_rstd_scaled);
-            //     tile_regs_release();
-            //     cb_push_back(cb_xmm_rstd_scaled, 1);
-            // }
-            // cb_pop_front(cb_xmm_rstd, c_tiles);
+            // Scale by weight
+            mul_bcast_rows_init_short(cb_xmm_rstd, cb_weight);
+            cb_wait_front(cb_xmm_rstd, c_tiles);
+            for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
+                cb_reserve_back(cb_xmm_rstd_scaled, 1);
+                tile_regs_acquire();
+                mul_tiles_bcast_rows(cb_xmm_rstd, cb_weight, c_tile, c_tile, 0);
+                tile_regs_commit();
+                tile_regs_wait();
+                pack_tile(0, cb_xmm_rstd_scaled);
+                tile_regs_release();
+                cb_push_back(cb_xmm_rstd_scaled, 1);
+            }
+            cb_pop_front(cb_xmm_rstd, c_tiles);
 
-            // // Add bias
-            // add_bcast_rows_init_short(cb_xmm_rstd_scaled, cb_bias);
-            // cb_wait_front(cb_xmm_rstd_scaled, c_tiles);
-            // for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-            //     cb_reserve_back(cb_out, 1);
-            //     tile_regs_acquire();
-            //     add_tiles_bcast_rows(cb_xmm_rstd_scaled, cb_bias, c_tile, c_tile, 0);
-            //     tile_regs_commit();
-            //     tile_regs_wait();
-            //     pack_tile(0, cb_out);
-            //     tile_regs_release();
-            //     cb_push_back(cb_out, 1);
-            // }
-            // cb_pop_front(cb_xmm_rstd_scaled, c_tiles);
-
-
-            // cb_push_back(cb_out, c_tiles);
-            // cb_pop_front(cb_inp, c_tiles);
+            // Add bias
+            add_bcast_rows_init_short(cb_xmm_rstd_scaled, cb_bias);
+            cb_wait_front(cb_xmm_rstd_scaled, c_tiles);
+            for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
+                cb_reserve_back(cb_out, 1);
+                tile_regs_acquire();
+                add_tiles_bcast_rows(cb_xmm_rstd_scaled, cb_bias, c_tile, c_tile, 0);
+                tile_regs_commit();
+                tile_regs_wait();
+                pack_tile(0, cb_out);
+                tile_regs_release();
+                cb_push_back(cb_out, 1);
+            }
+            cb_pop_front(cb_xmm_rstd_scaled, c_tiles);
 
             // We should now have a page of mean and rstd to give to writer
             cb_reserve_back(cb_mean, 1);
             cb_reserve_back(cb_rstd, 1);
-            // Do compute
 
+            // Copy Mean
+            transpose_wh_init_short(cb_intermed_mean);
+            acquire_dst(tt::DstMode::Half);
+            transpose_wh_tile(cb_intermed_mean, 0, 0);
+            pack_tile(0, cb_mean);
+            release_dst(tt::DstMode::Half);
             cb_push_back(cb_mean, 1);
+            cb_pop_front(cb_intermed_mean, 1);
+            // Copy Rstd
+            acquire_dst(tt::DstMode::Half);
+            transpose_wh_tile(cb_intermed_rstd, 0, 0);
+            pack_tile(0, cb_rstd);
+            release_dst(tt::DstMode::Half);
             cb_push_back(cb_rstd, 1);
-
+            cb_pop_front(cb_intermed_rstd, 1);
         }
     }
 
