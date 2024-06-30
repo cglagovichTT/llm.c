@@ -18,7 +18,7 @@ T ceil_div(T dividend, T divisor) {
 float* make_random_float_01(size_t N) {
     float* arr = (float*)malloc(N * sizeof(float));
     for (size_t i = 0; i < N; i++) {
-        arr[i] = ((float)rand() / RAND_MAX); // range 0..1
+        arr[i] = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)); // range 0..1
     }
     return arr;
 }
@@ -26,7 +26,7 @@ float* make_random_float_01(size_t N) {
 float* make_random_float(size_t N) {
     float* arr = (float*)malloc(N * sizeof(float));
     for (size_t i = 0; i < N; i++) {
-        arr[i] = ((float)rand() / RAND_MAX) * 2.0 - 1.0; // range -1..1
+        arr[i] = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * 2.0 - 1.0; // range -1..1
     }
     return arr;
 }
@@ -34,7 +34,7 @@ float* make_random_float(size_t N) {
 std::vector<float> make_random_float_vec(size_t N) {
     auto arr = std::vector<float>(N);
     for (size_t i = 0; i < N; i++) {
-        arr[i] = ((float)rand() / RAND_MAX) * 2.0 - 1.0; // range -1..1
+        arr[i] = (static_cast<float>(rand()) / static_cast<float>(RAND_MAX)) * 2.0 - 1.0; // range -1..1
     }
     return arr;
 }
@@ -268,7 +268,8 @@ std::shared_ptr<Buffer> MakeBufferFP32(Device *device, uint32_t n_tiles, bool sr
     return MakeBuffer(device, tile_size * n_tiles, page_tiles * tile_size, sram);
 }
 
-CBHandle MakeCircularBuffer(Program& program, const CoreCoord& core, tt::CB cb, uint32_t size, uint32_t page_size, tt::DataFormat format, bool log=true)
+template<typename core_t>
+CBHandle MakeCircularBuffer(Program& program, const core_t& core, tt::CB cb, uint32_t size, uint32_t page_size, tt::DataFormat format, bool log=true)
 {
     TT_FATAL(size % page_size == 0);
     if (log) {

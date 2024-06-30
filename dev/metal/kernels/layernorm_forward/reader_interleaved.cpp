@@ -123,6 +123,10 @@ void kernel_main()
     const uint32_t inp_addr = get_arg_val<uint32_t>(3);
     const uint32_t weight_addr = get_arg_val<uint32_t>(4);
     const uint32_t bias_addr = get_arg_val<uint32_t>(5);
+    const uint32_t start_b = get_arg_val<uint32_t>(6);
+    const uint32_t start_t = get_arg_val<uint32_t>(7);
+    const uint32_t end_b = get_arg_val<uint32_t>(8);
+    const uint32_t end_t = get_arg_val<uint32_t>(9);
 
     constexpr uint32_t one_scalar = get_compile_time_arg_val(0);
     constexpr uint32_t mean_scalar = get_compile_time_arg_val(1);
@@ -138,7 +142,6 @@ void kernel_main()
 
     const uint32_t inp_tile_size_bytes = get_tile_size(cb_inp);
     constexpr DataFormat inp_data_format = get_dataformat(cb_inp);
-    DPRINT << "inp_tile_size_bytes: " << inp_tile_size_bytes << ENDL();
 
     const uint32_t weight_tile_size_bytes = get_tile_size(cb_weight);
 
@@ -152,26 +155,17 @@ void kernel_main()
         .bank_base_address = weight_addr,
         .log_base_2_of_page_size = log_page_size,
     };
-    DPRINT << "weight_gen base_address=" << weight_gen.bank_base_address << ENDL();
 
     // Bias has same page size and dataformat as weight
     const InterleavedPow2AddrGen<true> bias_gen = {
         .bank_base_address = bias_addr,
         .log_base_2_of_page_size = log_page_size,
     };
-    DPRINT << "bias_gen base_address=" << bias_gen.bank_base_address << ENDL();
 
     // Generate constant tiles for layernorm compute
     generate_reduce_scaler(cb_one_scalar, one_scalar);
-    // DPRINT << "cb_one_scalar:" << ENDL();
-    // print_tile_contents(cb_one_scalar, 0);
-    // Bcast scalars
     generate_bcast_col_scalar(cb_mean_recip_scalar, mean_scalar);
-    // DPRINT << "cb_mean_recip_scalar:" << ENDL();
-    // print_tile_contents(cb_mean_recip_scalar, 0);
     generate_bcast_col_scalar(cb_epsilon_scalar, epsilon_scalar);
-    // DPRINT << "cb_epsilon_scalar:" << ENDL();
-    // print_tile_contents(cb_epsilon_scalar, 0);
 
     const uint32_t num_weight_pages = C / 32; // page size should be 32 datums
 
@@ -194,12 +188,8 @@ void kernel_main()
         // `add_tiles_bcast_rows`. This reading must be aware of 16x16 faces.
 
         uint64_t weight_dram_noc_addr = get_noc_addr(i, weight_gen);
-        // DPRINT << "reader: FACE 0 weight_dram_noc_addr=" << weight_dram_noc_addr << ENDL();
-        // DPRINT << "reader: FACE 0 weight_wr_ptr=" << weight_wr_ptr << ENDL();
         noc_async_read(weight_dram_noc_addr, weight_wr_ptr, face_row_bf16_byte);
         weight_dram_noc_addr += face_row_bf16_byte;
-        // DPRINT << "reader: FACE 1 weight_dram_noc_addr=" << weight_dram_noc_addr << ENDL();
-        // DPRINT << "reader: FACE 1 weight_wr_ptr=" << weight_wr_ptr + face_fp32_bytes << ENDL();
         noc_async_read(weight_dram_noc_addr, weight_wr_ptr + face_bf16_bytes, face_row_bf16_byte);
         weight_wr_ptr += weight_tile_size_bytes;
 
@@ -209,10 +199,6 @@ void kernel_main()
         noc_async_read(bias_dram_noc_addr, bias_wr_ptr + face_bf16_bytes, face_row_bf16_byte);
         bias_wr_ptr += weight_tile_size_bytes;
 
-        // DPRINT << "cb_weight:" << ENDL();
-        // print_tile_contents(cb_weight, i);
-        // DPRINT << "cb_bias:" << ENDL();
-        // print_tile_contents(cb_bias, i);
     }
     noc_async_read_barrier();
     cb_push_back(cb_weight, num_weight_pages);
@@ -221,8 +207,8 @@ void kernel_main()
     /* Enter input reading loop */
     const uint32_t c_tiles = C / 32;
     uint32_t inp_tile_idx = 0;
-    for (uint32_t b = 0; b < B; ++b) {
-        for (uint32_t t_tile = 0; t_tile < T / 32; ++t_tile) {
+    for (uint32_t b = start_b; b < end_b; ++b) {
+        for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
             // DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
 
             cb_reserve_back(cb_inp, c_tiles);
@@ -232,8 +218,6 @@ void kernel_main()
                 inp_wr_ptr += inp_tile_size_bytes;
                 ++inp_tile_idx;
                 noc_async_read_barrier();
-                DPRINT << "cb_inp:" << ENDL();
-                print_tile_contents(cb_inp, t_tile);
             }
             cb_push_back(cb_inp, c_tiles);
         
