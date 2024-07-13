@@ -49,17 +49,20 @@ void kernel_main()
 
     /* Enter writing loop */
     const uint32_t c_tiles = C / 32;
-    uint32_t out_tile_idx = 0;
-    uint32_t stats_tile_idx = 0;
+    const uint32_t t_tiles = T / 32;
     for (uint32_t b = start_b; b < end_b; ++b) {
+	uint32_t batch_tile_offset = b * t_tiles * c_tiles;
+	uint32_t stats_batch_offset = b * t_tiles;
         for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
             // DPRINT << "writer: b=" << b << " t_tile=" << t_tile << ENDL();
+	    uint32_t seq_start_tile = batch_tile_offset + t_tile * c_tiles; 
+	    uint32_t stats_tile_idx = stats_batch_offset + t_tile;
 
             cb_wait_front(cb_out, c_tiles);
             uint32_t out_rd_ptr = get_read_ptr(cb_out);
             for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-                noc_async_write_tile(out_tile_idx, out_gen, out_rd_ptr);
-                ++out_tile_idx;
+                noc_async_write_tile(seq_start_tile, out_gen, out_rd_ptr);
+                ++seq_start_tile;
                 out_rd_ptr += out_tile_size_bytes;
             }
             noc_async_write_barrier();

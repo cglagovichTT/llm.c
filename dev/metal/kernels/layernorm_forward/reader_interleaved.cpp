@@ -206,17 +206,20 @@ void kernel_main()
 
     /* Enter input reading loop */
     const uint32_t c_tiles = C / 32;
-    uint32_t inp_tile_idx = 0;
+    const uint32_t t_tiles = T / 32;
+
     for (uint32_t b = start_b; b < end_b; ++b) {
+	uint32_t batch_tile_offset = b * t_tiles * c_tiles;
         for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
+	    uint32_t seq_start_tile = batch_tile_offset + t_tile * c_tiles; 
             // DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
 
             cb_reserve_back(cb_inp, c_tiles);
             uint32_t inp_wr_ptr = get_write_ptr(cb_inp);
             for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
-                noc_async_read_tile(inp_tile_idx, inp_gen, inp_wr_ptr);
+                noc_async_read_tile(seq_start_tile, inp_gen, inp_wr_ptr);
                 inp_wr_ptr += inp_tile_size_bytes;
-                ++inp_tile_idx;
+                ++seq_start_tile;
                 noc_async_read_barrier();
             }
             cb_push_back(cb_inp, c_tiles);
