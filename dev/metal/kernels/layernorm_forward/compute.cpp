@@ -65,7 +65,7 @@ void MAIN {
             // cb_reserve_back(cb_out, c_tiles);
 
             // Sum inp
-            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(PoolType::SUM, ReduceDim::REDUCE_ROW, cb_inp, cb_inp, cb_one_scalar);
+            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(cb_inp, cb_inp, cb_one_scalar);
 
             cb_reserve_back(cb_intermed_mean, 1);
             tile_regs_acquire();
@@ -124,7 +124,7 @@ void MAIN {
             }
 
             // Sum (x - mean) **2
-            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(PoolType::SUM, ReduceDim::REDUCE_ROW, cb_intermed_rstd, cb_xmm2, cb_one_scalar);
+            reduce_init_delta<false, PoolType::SUM, ReduceDim::REDUCE_ROW>(cb_intermed_rstd, cb_xmm2, cb_one_scalar);
             cb_reserve_back(cb_intermed_rstd, 1);
             cb_wait_front(cb_xmm2, c_tiles);
             tile_regs_acquire();

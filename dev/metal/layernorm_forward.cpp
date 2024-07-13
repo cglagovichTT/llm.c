@@ -164,7 +164,7 @@ void layernorm_setup_program(Program& program, Device* device, uint32_t B, uint3
         "kernels/layernorm_forward/compute.cpp",
         core_range,
         ComputeConfig{
-            .fp32_dest_acc_en = false,
+            .fp32_dest_acc_en = true,
             .math_approx_mode = false,
             .compile_args = {},
             .defines = {}
@@ -228,7 +228,7 @@ void layernorm_setup_program(Program& program, Device* device, uint32_t B, uint3
         start_t = std::min(start_t, seq_tiles);
         end_t = std::min(end_t, seq_tiles);
         
-        std::cout << "core: " << core_idx << " start_b: " << start_b << " start_t: " << start_t << " end_b: " << end_b << " end_t: " << end_t << std::endl;
+        std::cout << "core: " << core_idx << " batch range (" << start_b << ", " << end_b <<  "), sequence range (" << start_t << ", " << end_t << ")" << std::endl;
 
         SetRuntimeArgs(program, reader, core, {
             B, T, C,
@@ -260,6 +260,15 @@ int main(int argc, char **argv) {
     uint32_t B = 8;
     uint32_t T = 1024;
     uint32_t C = 768;
+    if (argc == 4) {
+	std::cout << "Using parameters provided from the command line" << std::endl;
+
+        B = std::stoi(argv[1]);
+        T = std::stoi(argv[2]);
+        C = std::stoi(argv[3]);
+    }
+
+    std::cout << "B="<< B << " T=" << T << " C=" << C << std::endl;
 
     // create host memory of random numbers
     auto out_cpu = std::vector<float>(B * T * C);

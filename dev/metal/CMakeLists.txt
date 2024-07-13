@@ -36,7 +36,7 @@ message(STATUS "TT_METAL_HOME: $ENV{TT_METAL_HOME}")
 message(STATUS "ARCH_NAME: $ENV{ARCH_NAME}")
 
 # Find Boost
-find_package(Boost REQUIRED COMPONENTS thread filesystem system regex)
+# find_package(Boost REQUIRED COMPONENTS thread filesystem system regex)
 
 # Find NUMA library
 find_library(NUMA_LIBRARY NAMES numa)
@@ -75,7 +75,6 @@ function(add_common_target target_name)
         ${UMD_HOME}/device/${ARCH_NAME}
         ${UMD_HOME}/src/firmware/riscv/${ARCH_NAME}
         $ENV{TT_METAL_HOME}/tt_metal/third_party/reflect
-        ${Boost_INCLUDE_DIRS}
         ${REFLECT_INCLUDE_DIR}
     )
 
@@ -107,7 +106,6 @@ function(add_common_target target_name)
         yaml-cpp
         dl z pthread atomic hwloc ${NUMA_LIBRARY}
         c++ c++abi
-        ${Boost_LIBRARIES}
     )
 endfunction()
 
