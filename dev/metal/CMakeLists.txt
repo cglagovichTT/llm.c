@@ -111,4 +111,5 @@ endfunction()
 
 # Add multiple targets using the common function
 add_common_target(layernorm_forward)
+add_common_target(layernorm_backward)
 add_common_target(dram_loopback)
