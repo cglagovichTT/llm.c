@@ -27,17 +27,22 @@ make
 #include "common/bfloat16.hpp"
 // #include "tensor/tensor.hpp"
 #include "common/constants.hpp"
+#include "impl/device/device.hpp"
 // #include "tt_numpy/functions.hpp"
 
 // project imports
 #include "common.h"
 
-using namespace tt::tt_metal;
+using namespace tt;
+using namespace tt_metal;
+using namespace constants;
 
 int main(int argc, char **argv) {
     srand(0);
     int device_id = 0;
-    Device *device = CreateDevice(device_id);
+    tt_metal::Device *device = tt_metal::CreateDevice(device_id);
+
+    // Device *device = CreateDevice(device_id);
     CommandQueue& cq = device->command_queue();
 
 

@@ -16,6 +16,7 @@
 #include "common/bfloat16.hpp"
 // #include "tensor/tensor.hpp"
 #include "common/constants.hpp"
+#include "impl/device/device.hpp"
 // #include "tt_numpy/functions.hpp"
 
 // project imports
@@ -276,10 +277,8 @@ void layernorm_backwards_setup_program(
 
     // TODO: Pass relevant CBs into compile time args
     std::vector<uint32_t> reader_ct_args = {
-        packed_one_scalar,
-        mean_recip_packed.u,
         // log of stick_size
-        log_stick_size // should be 6 for bf16
+        log_stick_size, // should be 6 for bf16
         // CBs
         cb_inp,
         cb_dout,
@@ -291,8 +290,10 @@ void layernorm_backwards_setup_program(
         cb_dbias
     };
     std::vector<uint32_t> writer_ct_args = {
+        packed_one_scalar,
+        mean_recip_packed.u,
         log_stick_size,
-        cb_indentity_scalar,
+        cb_identity_scalar,
         cb_mean_scalar,
         cb_out_dinp,
         cb_out_dweight,
@@ -307,7 +308,7 @@ void layernorm_backwards_setup_program(
         cb_dinp,
         cb_dweight,
         cb_dbias,
-        cb_indentity_scalar,
+        cb_identity_scalar,
         cb_mean_scalar,
         cb_out_dinp,
         cb_out_dweight,
@@ -352,7 +353,7 @@ void layernorm_backwards_setup_program(
         weight_buffer->address(),
         mean_buffer->address(),
         rstd_buffer->address(),
-        dinp_buffer->address(),
+        inp_buffer->address(),
         dweight_buffer->address(),
         dbias_buffer->address()
     });

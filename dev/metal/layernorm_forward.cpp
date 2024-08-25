@@ -27,6 +27,7 @@ make
 #include "common/bfloat16.hpp"
 // #include "tensor/tensor.hpp"
 #include "common/constants.hpp"
+#include "impl/device/device.hpp"
 // #include "tt_numpy/functions.hpp"
 
 // project imports
