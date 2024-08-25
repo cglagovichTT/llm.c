@@ -215,6 +215,8 @@ void layernorm_backwards_setup_program(
     // This first implementation is on a single core. TODO: parallelize, involving 2D reduction?
     constexpr CoreCoord core = {0, 0};
 
+    std::cout << "core: " << core.x << "," << core.y << std::endl;
+
     tt::CB cb_inp = tt::CB::c_in0;
     tt::CB cb_dout = tt::CB::c_in1;
     tt::CB cb_weight = tt::CB::c_in2;
@@ -516,7 +518,7 @@ int main(int argc, char **argv) {
     layernorm_backwards_setup_program(layernorm_program, device, B, T, C, dout_buffer, inp_buffer, weight_buffer, mean_buffer, rstd_buffer, dinp_buffer, dweight_buffer, dbias_buffer);
 
     // launch program
-    // EnqueueProgram(cq, layernorm_program, true);
+    EnqueueProgram(cq, layernorm_program, true);
     std::cout << "Kernel execution finished" << std::endl;
 
     // Read the output buffer.

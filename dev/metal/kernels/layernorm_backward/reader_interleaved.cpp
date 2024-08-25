@@ -138,15 +138,15 @@ void kernel_main()
         // `add_tiles_bcast_rows`. This reading must be aware of 16x16 faces.
 
         uint64_t dweight_dram_noc_addr = get_noc_addr(i, dweight_gen);
-        read_row_major_stick_to_tile_row(dweight_dram_noc_addr, dbias_wr_ptr, face_row_bf16_byte, face_bf16_bytes)
+        read_row_major_stick_to_tile_row(dweight_dram_noc_addr, dbias_wr_ptr, face_row_bf16_byte, face_bf16_bytes);
         dweight_wr_ptr += weight_tile_size_bytes;
 
         uint64_t dbias_dram_noc_addr = get_noc_addr(i, dbias_gen);
-        read_row_major_stick_to_tile_row(dbias_dram_noc_addr, dbias_wr_ptr, face_row_bf16_byte, face_bf16_bytes)
+        read_row_major_stick_to_tile_row(dbias_dram_noc_addr, dbias_wr_ptr, face_row_bf16_byte, face_bf16_bytes);
         dbias_wr_ptr += weight_tile_size_bytes;
 
         uint64_t weight_dram_noc_addr = get_noc_addr(i, weight_gen);
-        read_row_major_stick_to_tile_row(weight_dram_noc_addr, weight_wr_ptr, face_row_bf16_byte, face_bf16_bytes)
+        read_row_major_stick_to_tile_row(weight_dram_noc_addr, weight_wr_ptr, face_row_bf16_byte, face_bf16_bytes);
         weight_wr_ptr += weight_tile_size_bytes;
 
     }
@@ -159,11 +159,11 @@ void kernel_main()
     const uint32_t c_tiles = C / 32;
     const uint32_t t_tiles = T / 32;
 
-    for (uint32_t b = start_b; b < end_b; ++b) {
+    for (uint32_t b = 0; b < B; ++b) {
 	    uint32_t batch_tile_offset = b * t_tiles * c_tiles;
-        for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
+        for (uint32_t t_tile = 0; t_tile < t_tiles; ++t_tile) {
 	        uint32_t seq_start_tile = batch_tile_offset + t_tile * c_tiles; 
-            // DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
+            DPRINT << "reader: b=" << b << " t_tile=" << t_tile << ENDL();
 
             // read mean and rstd for this row of tiles
             uint32_t stats_tile_id = b * t_tiles + t_tile;
@@ -180,7 +180,7 @@ void kernel_main()
 
 
 
-            // Read c_tiles of input and dout
+            // Read c_tiles of inp
             cb_reserve_back(cb_inp, c_tiles);
             uint32_t inp_wr_ptr = get_write_ptr(cb_inp);
             for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
@@ -191,6 +191,7 @@ void kernel_main()
             }
             cb_push_back(cb_inp, c_tiles);
 
+            // Read c_tiles of dout
             cb_reserve_back(cb_dout, c_tiles);
             uint32_t dout_wr_ptr = get_write_ptr(cb_dout);
             for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
@@ -199,6 +200,19 @@ void kernel_main()
                 ++seq_start_tile;
                 noc_async_read_barrier();
             }
+            cb_push_back(cb_dout, c_tiles);
+
+
+            // Read c_tiles of dinp
+            cb_reserve_back(cb_dinp, c_tiles);
+            uint32_t dinp_wr_ptr = get_write_ptr(cb_dinp);
+            for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
+                noc_async_read_tile(seq_start_tile, dinp_gen, dinp_wr_ptr);
+                dinp_wr_ptr += inp_tile_size_bytes;
+                ++seq_start_tile;
+                noc_async_read_barrier();
+            }
+            cb_push_back(cb_dinp, c_tiles);
         
         }
     }

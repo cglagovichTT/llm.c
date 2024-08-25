@@ -92,9 +92,9 @@ void kernel_main()
     /* Enter writing loop */
     const uint32_t c_tiles = C / 32;
     const uint32_t t_tiles = T / 32;
-    for (uint32_t b = start_b; b < end_b; ++b) {
+    for (uint32_t b = 0; b < B; ++b) {
 	uint32_t batch_tile_offset = b * t_tiles * c_tiles;
-        for (uint32_t t_tile = start_t; t_tile < end_t; ++t_tile) {
+        for (uint32_t t_tile = 0; t_tile < t_tiles; ++t_tile) {
             // DPRINT << "writer: b=" << b << " t_tile=" << t_tile << ENDL();
 	    uint32_t seq_start_tile = batch_tile_offset + t_tile * c_tiles; 
 
@@ -103,7 +103,7 @@ void kernel_main()
             for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
                 noc_async_write_tile(seq_start_tile, dinp_gen, out_rd_ptr);
                 ++seq_start_tile;
-                out_rd_ptr += out_tile_size_bytes;
+                out_rd_ptr += tile_size_bytes;
             }
             noc_async_write_barrier();
             cb_pop_front(cb_out_dinp, c_tiles);
@@ -117,7 +117,7 @@ void kernel_main()
     uint32_t dweight_rd_ptr = get_read_ptr(cb_out_dweight);
     uint32_t dbias_rd_ptr = get_read_ptr(cb_out_dbias);
 
-    for (uint32_t c_tile = 0; c < c_tiles; ++c_tile) {
+    for (uint32_t c_tile = 0; c_tile < c_tiles; ++c_tile) {
         uint64_t dweight_dram_noc_addr = get_noc_addr(c_tile, dweight_gen);
         noc_async_write(dweight_rd_ptr, dweight_dram_noc_addr, face_row_bf16_byte);
         dweight_dram_noc_addr += face_row_bf16_byte;
